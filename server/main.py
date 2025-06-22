@@ -148,8 +148,9 @@ def admin_required(f):
     return decorated_function
 
 # --- Add some default templates and default users to MongoDB if collections are empty ---
-def initialize_db():
+def initialize_db(test_mode=False):
     try:
+        # Template initialization
         if templates_collection.count_documents({}) == 0:
             logger.info("Initializing default templates...")
             default_templates = [
@@ -167,60 +168,75 @@ def initialize_db():
                     'id': 'inventory',
                     'name': 'Inventory List',
                     'description': 'Product inventory tracking',
-                    'columns': ['Item', 'SKU', 'Stock', 'Location', 'expiry'], # Added expiry column
+                    'columns': ['Item', 'SKU', 'Stock', 'Location', 'expiry'],
                     'sample_data': [
-                        {'Item': 'Widget A', 'SKU': 'WA001', 'Stock': 150, 'Location': 'Warehouse A', 'expiry': '15-07-2025'}, # Future, within range
-                        {'Item': 'Widget B', 'SKU': 'WB001', 'Stock': 75, 'Location': 'Warehouse B', 'expiry': '01-01-2026'}, # Well in the future
-                        {'Item': 'Expired Item C', 'SKU': 'EXC001', 'Stock': 10, 'Location': 'Shelf 3', 'expiry': '10-06-2025'} # Expired recently
+                        {'Item': 'Widget A', 'SKU': 'WA001', 'Stock': 150, 'Location': 'Warehouse A', 'expiry': '15-07-2025'},
+                        {'Item': 'Widget B', 'SKU': 'WB001', 'Stock': 75, 'Location': 'Warehouse B', 'expiry': '01-01-2026'},
+                        {'Item': 'Expired Item C', 'SKU': 'EXC001', 'Stock': 10, 'Location': 'Shelf 3', 'expiry': '10-06-2025'}
                     ]
                 }
             ]
-            templates_collection.insert_many(default_templates)
+            result = templates_collection.insert_many(default_templates)
+            if not result.acknowledged:
+                raise Exception("Failed to insert default templates.")
             logger.info("Default templates initialized.")
         else:
             logger.info("Templates collection is not empty, skipping initialization.")
 
+        # User initialization
         if users_collection.count_documents({}) == 0:
             logger.info("Initializing default users...")
-            hashed_admin_password = generate_password_hash('admin')
-            hashed_user_password = generate_password_hash('user')
-            
             default_users = [
-                {'username': 'admin', 'password': hashed_admin_password, 'role': 'admin', 'email': 'admin@example.com'},
-                {'username': 'user', 'password': hashed_user_password, 'role': 'user', 'email': 'user@example.com'}
+                {'username': 'admin', 'password': generate_password_hash('admin'), 'role': 'admin', 'email': 'admin@example.com'},
+                {'username': 'user', 'password': generate_password_hash('user'), 'role': 'user', 'email': 'user@example.com'}
             ]
-            users_collection.insert_many(default_users)
+            result = users_collection.insert_many(default_users)
+            if not result.acknowledged:
+                raise Exception("Failed to insert default users.")
             logger.info("Default users initialized (admin, user).")
         else:
             logger.info("Users collection is not empty, skipping basic user initialization.")
-            
-        # Add a specific 'tester1' user with the email from logs if not exists
+
+        # Ensure tester1 exists
         tester1_user = users_collection.find_one({"username": "tester1"})
         if not tester1_user:
-            hashed_tester1_password = generate_password_hash('tester1')
-            users_collection.insert_one({'username': 'tester1', 'password': hashed_tester1_password, 'role': 'tester', 'email': 'chenhayik@gmail.com'})
+            result = users_collection.insert_one({
+                'username': 'tester1',
+                'password': generate_password_hash('tester1'),
+                'role': 'tester',
+                'email': 'chenhayik@gmail.com'
+            })
+            if not result.acknowledged:
+                raise Exception("Failed to insert tester1 user.")
             logger.info("Default tester1 user created with email chenhayik@gmail.com.")
         else:
-            # Ensure tester1 has the correct email if it exists
             if tester1_user.get('email') != 'chenhayik@gmail.com':
                 users_collection.update_one(
                     {"_id": tester1_user['_id']},
                     {"$set": {"email": 'chenhayik@gmail.com'}}
                 )
-                logger.info(f"Updated email for existing tester1 user to chenhayik@gmail.com.")
+                logger.info("Updated email for existing tester1 user to chenhayik@gmail.com.")
 
-
-        # Ensure all existing users have an email field for the new feature
-        # This loop is after the specific tester1 creation to avoid overwriting its email.
+        # Patch missing emails
         for user_doc in users_collection.find({"email": {"$exists": False}}):
-            users_collection.update_one(
+            result = users_collection.update_one(
                 {"_id": user_doc['_id']},
                 {"$set": {"email": f"{user_doc['username']}@example.com"}}
             )
+            if result.modified_count != 1:
+                raise Exception(f"Failed to update email for user {user_doc['username']}.")
             logger.info(f"Added default email for existing user: {user_doc['username']}")
+
+        # Optional cleanup (for test-only runs)
+        if test_mode:
+            logger.info("Test mode active: cleaning up initialized data...")
+            templates_collection.delete_many({})
+            users_collection.delete_many({"username": {"$in": ["admin", "user", "tester1"]}})
+            logger.info("Test data removed successfully.")
 
     except Exception as e:
         logger.error(f"Error during database initialization: {e}")
+        raise  # Re-raise the error so it can be caught by the application or test framework
 
 
 # Call initialization on app startup
